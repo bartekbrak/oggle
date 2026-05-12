@@ -156,6 +156,25 @@
     font-size: 1.2rem;
   }
 
+  .solo-breakdown {
+    display: flex;
+    gap: 15px;
+    margin-top: 10px;
+    font-size: 0.9rem;
+    opacity: 0.8;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .solo-breakdown div {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .solo-breakdown-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+
   #userFoundWordsList {
     display: flex;
     flex-wrap: wrap;
@@ -416,6 +435,7 @@
         <div>Punkty: <span id="soloScore">0</span></div>
         <div>Słowa: <span id="soloCount">0</span></div>
       </div>
+      <div id="soloBreakdown" class="solo-breakdown"></div>
       <div id="userFoundWordsList"></div>
     </div>
   </div>
@@ -630,6 +650,8 @@ let userFoundWords = new Set();
 let isTracing = false;
 let tracedPath = [];
 let currentTracedWord = '';
+let possibleWordsByLength = {};
+let userWordsByLength = {};
 
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
@@ -901,7 +923,20 @@ function createBoard(langKey) {
 
         if (gameMode === 'solo') {
             timerEl.textContent = "Ładowanie...";
-            dictPromise.then(() => startTimer());
+            dictPromise.then((trie) => {
+                possibleWordsByLength = { '3':0, '4':0, '5':0, '6':0, '7':0, '8+':0 };
+                userWordsByLength = { '3':0, '4':0, '5':0, '6':0, '7':0, '8+':0 };
+                if (trie) {
+                    const { found } = findWords(currentBoard, trie, 3);
+                    found.forEach(w => {
+                        const len = w.length;
+                        const key = len >= 8 ? '8+' : len.toString();
+                        possibleWordsByLength[key] = (possibleWordsByLength[key] || 0) + 1;
+                    });
+                }
+                updateSoloUI();
+                startTimer();
+            });
         } else {
             startTimer();
         }
@@ -960,6 +995,22 @@ const pathOverlay = document.getElementById('path-overlay');
 function updateSoloUI() {
     document.getElementById('soloScore').textContent = soloScore;
     document.getElementById('soloCount').textContent = userFoundWords.size;
+    
+    const breakdownEl = document.getElementById('soloBreakdown');
+    if (breakdownEl) {
+        let html = '';
+        const keys = ['3', '4', '5', '6', '7', '8+'];
+        keys.forEach(key => {
+            const total = possibleWordsByLength[key] || 0;
+            if (total > 0) {
+                const found = userWordsByLength[key] || 0;
+                const label = key === '8+' ? '8+ lit.' : `${key} lit.`;
+                html += `<div><span class="solo-breakdown-label">${label}</span><span>${found}/${total}</span></div>`;
+            }
+        });
+        breakdownEl.innerHTML = html;
+    }
+
     const listEl = document.getElementById('userFoundWordsList');
     listEl.innerHTML = '';
     const sorted = Array.from(userFoundWords).sort((a, b) => b.length - a.length || a.localeCompare(b));
@@ -1107,6 +1158,11 @@ function handlePointerUp(e) {
     if (isValid && !userFoundWords.has(wordLower)) {
         userFoundWords.add(wordLower);
         soloScore += getScore(currentTracedWord.length);
+        
+        const len = currentTracedWord.length;
+        const key = len >= 8 ? '8+' : len.toString();
+        userWordsByLength[key] = (userWordsByLength[key] || 0) + 1;
+        
         updateSoloUI();
         
         tracedPath.forEach(idx => boardEl.children[idx].classList.add('valid-word'));
