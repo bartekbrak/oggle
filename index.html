@@ -97,7 +97,96 @@
 
   .main {
     display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .board-container {
+    position: relative;
+    /* We don't need padding/margin here, board handles it */
+  }
+
+  #path-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .mode-switch {
+    display: flex;
+    gap: 10px;
+  }
+
+  .mode-switch label {
+    font-size: 0.95rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  #soloUI {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+  }
+
+  #soloUI.active {
+    display: flex;
+  }
+
+  #currentWordDisplay {
+    font-size: 1.8rem;
+    font-weight: bold;
+    min-height: 2.2rem;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .solo-stats {
+    display: flex;
+    gap: 20px;
+    margin-top: 10px;
+    font-size: 1.2rem;
+  }
+
+  #userFoundWordsList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 15px;
+    max-width: 400px;
     justify-content: center;
+  }
+
+  #userFoundWordsList span {
+    background: rgba(0,0,0,0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+  }
+
+  .dice.selected {
+    background: #e3f2fd;
+    color: #1976d2;
+    transform: scale(0.95);
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.1);
+  }
+
+  .dice.valid-word {
+    background: #c8e6c9;
+    color: #2e7d32;
+  }
+
+  .dice.invalid-word {
+    background: #ffcdd2;
+    color: #c62828;
   }
 
   #board {
@@ -255,6 +344,10 @@
     button:hover { background-color: #135ac2; }
     .word-list a { color: #ccc; }
     .word-list a:hover { color: #fff; }
+    .dice.selected { background: #0d47a1; color: #bbdefb; }
+    .dice.valid-word { background: #1b5e20; color: #c8e6c9; }
+    .dice.invalid-word { background: #b71c1c; color: #ffcdd2; }
+    #userFoundWordsList span { background: rgba(255,255,255,0.1); }
   }
   .footer-info {
     position: fixed;
@@ -286,6 +379,11 @@
     <label for="language">Choose version:</label>
     <select id="language"></select>
 
+    <div class="mode-switch">
+      <label><input type="radio" name="mode" value="classic" checked> Klasyczny</label>
+      <label><input type="radio" name="mode" value="solo"> Solo</label>
+    </div>
+
     <div class="timer-row">
       <div id="timer"></div>
       <div class="timer-controls">
@@ -307,7 +405,19 @@
   </div>
 
   <div class="main">
-    <div id="board"></div>
+    <div class="board-container">
+      <div id="board"></div>
+      <svg id="path-overlay"></svg>
+    </div>
+
+    <div id="soloUI">
+      <div id="currentWordDisplay"></div>
+      <div class="solo-stats">
+        <div>Punkty: <span id="soloScore">0</span></div>
+        <div>Słowa: <span id="soloCount">0</span></div>
+      </div>
+      <div id="userFoundWordsList"></div>
+    </div>
   </div>
 
   <div class="results" id="results">
@@ -514,6 +624,13 @@ let boardGeneration = 0;
 let currentBoard = null;
 let currentLangKey = null;
 
+let gameMode = 'classic';
+let soloScore = 0;
+let userFoundWords = new Set();
+let isTracing = false;
+let tracedPath = [];
+let currentTracedWord = '';
+
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -711,7 +828,8 @@ function createBoard(langKey) {
 
     // Start preloading dictionary immediately
     const dictCfg = getDictConfigForLang(langKey);
-    if (dictCfg) ensureTrie(dictCfg);
+    let dictPromise = Promise.resolve(null);
+    if (dictCfg) dictPromise = ensureTrie(dictCfg);
 
     // Split string into dice (6 letters each)
     const dice = [];
@@ -752,25 +870,41 @@ function createBoard(langKey) {
         currentBoard = boardMatrix;
         updateShowWordsBtn();
 
-        let timeLeft = gameDuration;
-        timerEl.textContent = formatTime(timeLeft);
-        timerInterval = setInterval(() => {
-            if (gen !== boardGeneration) { clearInterval(timerInterval); return; }
-            timeLeft--;
+        // Reset Solo state
+        soloScore = 0;
+        userFoundWords.clear();
+        updateSoloUI();
+        clearTrace();
+
+        const startTimer = () => {
+            if (gen !== boardGeneration) return;
+            let timeLeft = gameDuration;
             timerEl.textContent = formatTime(timeLeft);
-            if (timeLeft === 15) {
-                boardEl.querySelectorAll('.dice').forEach(d => d.classList.add('urgent'));
-            }
-            if (timeLeft <= 0) {
-                clearInterval(timerInterval);
-                timerEl.textContent = "00:00";
-                boardEl.querySelectorAll('.dice').forEach(d => {
-                    d.classList.remove('urgent');
-                    d.classList.add('finished');
-                });
-                onTimerEnd();
-            }
-        }, 1000);
+            timerInterval = setInterval(() => {
+                if (gen !== boardGeneration) { clearInterval(timerInterval); return; }
+                timeLeft--;
+                timerEl.textContent = formatTime(timeLeft);
+                if (timeLeft === 15) {
+                    boardEl.querySelectorAll('.dice').forEach(d => d.classList.add('urgent'));
+                }
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    timerEl.textContent = "00:00";
+                    boardEl.querySelectorAll('.dice').forEach(d => {
+                        d.classList.remove('urgent');
+                        d.classList.add('finished');
+                    });
+                    onTimerEnd();
+                }
+            }, 1000);
+        };
+
+        if (gameMode === 'solo') {
+            timerEl.textContent = "Ładowanie...";
+            dictPromise.then(() => startTimer());
+        } else {
+            startTimer();
+        }
     }, maxDelay + 200));
 }
 
@@ -804,12 +938,193 @@ document.getElementById('timerPlus').addEventListener('click', () => {
     createBoard(languageSelect.value);
 });
 
+// Mode switch
+document.querySelectorAll('input[name="mode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        gameMode = e.target.value;
+        document.getElementById('soloUI').classList.toggle('active', gameMode === 'solo');
+        createBoard(languageSelect.value);
+    });
+});
+
 // Show words immediately
 showWordsBtn.addEventListener('click', () => {
     clearInterval(timerInterval);
     timerEl.textContent = '00:00';
     onTimerEnd();
 });
+
+// Solo Mode Interaction Logic
+const pathOverlay = document.getElementById('path-overlay');
+
+function updateSoloUI() {
+    document.getElementById('soloScore').textContent = soloScore;
+    document.getElementById('soloCount').textContent = userFoundWords.size;
+    const listEl = document.getElementById('userFoundWordsList');
+    listEl.innerHTML = '';
+    const sorted = Array.from(userFoundWords).sort((a, b) => b.length - a.length || a.localeCompare(b));
+    for (const w of sorted) {
+        const span = document.createElement('span');
+        span.textContent = w.toLowerCase();
+        listEl.appendChild(span);
+    }
+}
+
+function clearTrace() {
+    tracedPath = [];
+    currentTracedWord = '';
+    const display = document.getElementById('currentWordDisplay');
+    if(display) display.textContent = '';
+    if(pathOverlay) pathOverlay.innerHTML = '';
+    boardEl.querySelectorAll('.dice').forEach(d => {
+        d.classList.remove('selected', 'valid-word', 'invalid-word');
+    });
+}
+
+function drawPath() {
+    if (!pathOverlay) return;
+    pathOverlay.innerHTML = '';
+    if (tracedPath.length < 2) return;
+    
+    const diceEls = boardEl.querySelectorAll('.dice');
+    const boardRect = boardEl.getBoundingClientRect();
+    
+    let svgHTML = '';
+    for (let i = 0; i < tracedPath.length - 1; i++) {
+        const d1 = diceEls[tracedPath[i]].getBoundingClientRect();
+        const d2 = diceEls[tracedPath[i+1]].getBoundingClientRect();
+        
+        const x1 = d1.left + d1.width / 2 - boardRect.left;
+        const y1 = d1.top + d1.height / 2 - boardRect.top;
+        const x2 = d2.left + d2.width / 2 - boardRect.left;
+        const y2 = d2.top + d2.height / 2 - boardRect.top;
+        
+        svgHTML += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(25, 118, 210, 0.6)" stroke-width="8" stroke-linecap="round" />`;
+    }
+    pathOverlay.innerHTML = svgHTML;
+}
+
+function handlePointerDown(e) {
+    if (gameMode !== 'solo' || !currentBoard || timerEl.textContent === "00:00" || timerEl.textContent === "Ładowanie...") return;
+    // For mouse events, check if it's left click
+    if (e.type === 'mousedown' && e.button !== 0) return;
+    
+    const diceEl = e.target.closest('.dice');
+    if (!diceEl) return;
+    
+    e.preventDefault();
+    isTracing = true;
+    clearTrace();
+    
+    const index = Array.from(boardEl.children).indexOf(diceEl);
+    addToTrace(index, diceEl);
+}
+
+function handlePointerMove(e) {
+    if (!isTracing) return;
+    e.preventDefault();
+    
+    let clientX, clientY;
+    if (e.touches && e.touches.length > 0) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+    } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+    }
+    
+    const target = document.elementFromPoint(clientX, clientY);
+    const diceEl = target ? target.closest('.dice') : null;
+    if (!diceEl) return;
+    
+    const index = Array.from(boardEl.children).indexOf(diceEl);
+    
+    if (tracedPath.includes(index)) {
+        // Backtracking
+        if (tracedPath.length > 1 && tracedPath[tracedPath.length - 2] === index) {
+            const removedIndex = tracedPath.pop();
+            const removedEl = boardEl.children[removedIndex];
+            removedEl.classList.remove('selected');
+            currentTracedWord = currentTracedWord.slice(0, -1);
+            document.getElementById('currentWordDisplay').textContent = currentTracedWord;
+            drawPath();
+        }
+        return;
+    }
+    
+    const lastIndex = tracedPath[tracedPath.length - 1];
+    const cols = currentBoard[0].length;
+    const r1 = Math.floor(lastIndex / cols), c1 = lastIndex % cols;
+    const r2 = Math.floor(index / cols), c2 = index % cols;
+    
+    if (Math.abs(r1 - r2) <= 1 && Math.abs(c1 - c2) <= 1) {
+        addToTrace(index, diceEl);
+    }
+}
+
+function addToTrace(index, diceEl) {
+    tracedPath.push(index);
+    diceEl.classList.add('selected');
+    currentTracedWord += diceEl.textContent.trim();
+    document.getElementById('currentWordDisplay').textContent = currentTracedWord;
+    drawPath();
+}
+
+function getScore(length) {
+    if (length <= 4) return 1;
+    if (length === 5) return 2;
+    if (length === 6) return 3;
+    if (length === 7) return 5;
+    return 11;
+}
+
+function handlePointerUp(e) {
+    if (!isTracing) return;
+    isTracing = false;
+    
+    if (currentTracedWord.length < 3) {
+        clearTrace();
+        return;
+    }
+    
+    const dictCfg = getDictConfigForLang(currentLangKey);
+    const trie = trieCache[dictCfg.globalVar];
+    if (!trie) {
+        clearTrace();
+        return;
+    }
+    
+    let node = trie;
+    let isValid = true;
+    for (let i = 0; i < currentTracedWord.length; i++) {
+        node = node[currentTracedWord[i]];
+        if (!node) { isValid = false; break; }
+    }
+    if (isValid && node !== 1 && !node.$) isValid = false;
+    
+    const wordLower = currentTracedWord.toLowerCase();
+    
+    if (isValid && !userFoundWords.has(wordLower)) {
+        userFoundWords.add(wordLower);
+        soloScore += getScore(currentTracedWord.length);
+        updateSoloUI();
+        
+        tracedPath.forEach(idx => boardEl.children[idx].classList.add('valid-word'));
+        setTimeout(() => clearTrace(), 400);
+    } else {
+        tracedPath.forEach(idx => boardEl.children[idx].classList.add('invalid-word'));
+        setTimeout(() => clearTrace(), 400);
+    }
+}
+
+// Attach events
+boardEl.addEventListener('mousedown', handlePointerDown);
+document.addEventListener('mousemove', handlePointerMove);
+document.addEventListener('mouseup', handlePointerUp);
+
+boardEl.addEventListener('touchstart', handlePointerDown, {passive: false});
+document.addEventListener('touchmove', handlePointerMove, {passive: false});
+document.addEventListener('touchend', handlePointerUp);
 </script>
 
 </body>
