@@ -71,7 +71,15 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    opacity: 0.4;
+    cursor: pointer;
+    border: none;
+    background-color: #007bff;
+    color: white;
+    transition: background 0.3s;
+  }
+
+  .timer-btn:hover {
+    background-color: #0056b3;
   }
 
   #dictStatus {
@@ -191,6 +199,22 @@
     font-size: 0.9rem;
   }
 
+  #userFoundWordsList a {
+    background: rgba(0,0,0,0.1);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.2s, opacity 0.2s;
+  }
+
+  #userFoundWordsList a:hover {
+    background: rgba(0,0,0,0.2);
+    opacity: 0.9;
+    text-decoration: underline;
+  }
+
   .dice.selected {
     background: #e3f2fd;
     color: #1976d2;
@@ -206,6 +230,11 @@
   .dice.invalid-word {
     background: #ffcdd2;
     color: #c62828;
+  }
+
+  .dice.already-found {
+    background: #fff9c4;
+    color: #f57f17;
   }
 
   #board {
@@ -361,12 +390,17 @@
     select { background: #1f1f1f; color: #ffeb3b; }
     button { background-color: #1a73e8; color: #fff; }
     button:hover { background-color: #135ac2; }
+    .timer-btn { background-color: #1a73e8; }
+    .timer-btn:hover { background-color: #135ac2; }
     .word-list a { color: #ccc; }
     .word-list a:hover { color: #fff; }
     .dice.selected { background: #0d47a1; color: #bbdefb; }
     .dice.valid-word { background: #1b5e20; color: #c8e6c9; }
     .dice.invalid-word { background: #b71c1c; color: #ffcdd2; }
+    .dice.already-found { background: #f57f00; color: #fff59d; }
     #userFoundWordsList span { background: rgba(255,255,255,0.1); }
+    #userFoundWordsList a { background: rgba(255,255,255,0.1); }
+    #userFoundWordsList a:hover { background: rgba(255,255,255,0.2); }
   }
   .footer-info {
     position: fixed;
@@ -639,6 +673,7 @@ const wordListEl = document.getElementById('wordList');
 let timerInterval;
 let pendingTimeouts = [];
 let boardGeneration = 0;
+let currentTimeLeft = 0; // Track current remaining time
 
 // Current board state (captured after dice settle)
 let currentBoard = null;
@@ -900,16 +935,16 @@ function createBoard(langKey) {
 
         const startTimer = () => {
             if (gen !== boardGeneration) return;
-            let timeLeft = gameDuration;
-            timerEl.textContent = formatTime(timeLeft);
+            currentTimeLeft = gameDuration;
+            timerEl.textContent = formatTime(currentTimeLeft);
             timerInterval = setInterval(() => {
                 if (gen !== boardGeneration) { clearInterval(timerInterval); return; }
-                timeLeft--;
-                timerEl.textContent = formatTime(timeLeft);
-                if (timeLeft === 15) {
+                currentTimeLeft--;
+                timerEl.textContent = formatTime(currentTimeLeft);
+                if (currentTimeLeft === 15) {
                     boardEl.querySelectorAll('.dice').forEach(d => d.classList.add('urgent'));
                 }
-                if (timeLeft <= 0) {
+                if (currentTimeLeft <= 0) {
                     clearInterval(timerInterval);
                     timerEl.textContent = "00:00";
                     boardEl.querySelectorAll('.dice').forEach(d => {
@@ -964,13 +999,25 @@ reshuffleBtn.addEventListener('click', () => {
 document.getElementById('timerMinus').addEventListener('click', () => {
     gameDuration = Math.max(60, gameDuration - 60);
     updateDurationUrl();
-    createBoard(languageSelect.value);
+    // If timer is running, adjust the current time
+    if (timerInterval && currentTimeLeft > 0) {
+        currentTimeLeft = Math.max(0, currentTimeLeft - 60);
+        timerEl.textContent = formatTime(currentTimeLeft);
+    } else if (!currentBoard) {
+        timerEl.textContent = formatTime(gameDuration);
+    }
 });
 
 document.getElementById('timerPlus').addEventListener('click', () => {
     gameDuration += 60;
     updateDurationUrl();
-    createBoard(languageSelect.value);
+    // If timer is running, adjust the current time
+    if (timerInterval && currentTimeLeft > 0) {
+        currentTimeLeft += 60;
+        timerEl.textContent = formatTime(currentTimeLeft);
+    } else if (!currentBoard) {
+        timerEl.textContent = formatTime(gameDuration);
+    }
 });
 
 // Mode switch
@@ -1014,10 +1061,22 @@ function updateSoloUI() {
     const listEl = document.getElementById('userFoundWordsList');
     listEl.innerHTML = '';
     const sorted = Array.from(userFoundWords).sort((a, b) => b.length - a.length || a.localeCompare(b));
+    const dictCfg = getDictConfigForLang(currentLangKey);
     for (const w of sorted) {
-        const span = document.createElement('span');
-        span.textContent = w.toLowerCase();
-        listEl.appendChild(span);
+        if (dictCfg && dictCfg.linkBase) {
+            const a = document.createElement('a');
+            a.textContent = w.toLowerCase();
+            a.href = dictCfg.linkBase + encodeURIComponent(w.toLowerCase());
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.style.textDecoration = 'none';
+            a.style.color = 'inherit';
+            listEl.appendChild(a);
+        } else {
+            const span = document.createElement('span');
+            span.textContent = w.toLowerCase();
+            listEl.appendChild(span);
+        }
     }
 }
 
@@ -1028,7 +1087,7 @@ function clearTrace() {
     if(display) display.textContent = '';
     if(pathOverlay) pathOverlay.innerHTML = '';
     boardEl.querySelectorAll('.dice').forEach(d => {
-        d.classList.remove('selected', 'valid-word', 'invalid-word');
+        d.classList.remove('selected', 'valid-word', 'invalid-word', 'already-found');
     });
 }
 
@@ -1166,6 +1225,10 @@ function handlePointerUp(e) {
         updateSoloUI();
         
         tracedPath.forEach(idx => boardEl.children[idx].classList.add('valid-word'));
+        setTimeout(() => clearTrace(), 400);
+    } else if (isValid && userFoundWords.has(wordLower)) {
+        // Already found - show yellow
+        tracedPath.forEach(idx => boardEl.children[idx].classList.add('already-found'));
         setTimeout(() => clearTrace(), 400);
     } else {
         tracedPath.forEach(idx => boardEl.children[idx].classList.add('invalid-word'));
